@@ -1,68 +1,117 @@
 package com.scmspain.services;
 
-import com.scmspain.entities.Tweet;
+import java.util.List;
+
+import javax.persistence.EntityNotFoundException;
+import javax.transaction.Transactional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.metrics.writer.Delta;
 import org.springframework.boot.actuate.metrics.writer.MetricWriter;
 import org.springframework.stereotype.Service;
+import org.springframework.util.Assert;
 
-import javax.persistence.EntityManager;
-import javax.persistence.TypedQuery;
-import javax.transaction.Transactional;
-import java.util.ArrayList;
-import java.util.List;
+import com.scmspain.daos.TweetDao;
+import com.scmspain.entities.Tweet;
 
 @Service
 @Transactional
 public class TweetService {
-    private EntityManager entityManager;
+
+    private final static Logger LOGGER = LoggerFactory.getLogger(TweetService.class);
+
+    private TweetDao tweetDao;
     private MetricWriter metricWriter;
 
-    public TweetService(EntityManager entityManager, MetricWriter metricWriter) {
-        this.entityManager = entityManager;
-        this.metricWriter = metricWriter;
+    private static final String URL_PATTERN = "((http://|https://)\\S*\\s)";
+    private static final Integer TWEET_MAX_LENGTH = 140;
+
+    public TweetService(TweetDao tweetDao, MetricWriter metricWriter) {
+	this.tweetDao = tweetDao;
+	this.metricWriter = metricWriter;
     }
 
     /**
-      Push tweet to repository
-      Parameter - publisher - creator of the Tweet
-      Parameter - text - Content of the Tweet
-      Result - recovered Tweet
-    */
+     * Push tweet to repository
+     * 
+     * @param publisher
+     *            - creator of the Tweet
+     * @param text
+     *            - Content of the Tweet
+     */
     public void publishTweet(String publisher, String text) {
-        if (publisher != null && publisher.length() > 0 && text != null && text.length() > 0 && text.length() < 140) {
-            Tweet tweet = new Tweet();
-            tweet.setTweet(text);
-            tweet.setPublisher(publisher);
+	LOGGER.info("publishTweet {}, {} ", publisher, text);
+	Assert.hasLength(publisher, "Publisher must not be empty");
+	Assert.hasLength(text, "Tweet must not be empty");
+	Assert.isTrue(tweetExcedesLength(text), "Tweet must not be greater than 140 characters");
 
-            this.metricWriter.increment(new Delta<Number>("published-tweets", 1));
-            this.entityManager.persist(tweet);
-        } else {
-            throw new IllegalArgumentException("Tweet must not be greater than 140 characters");
-        }
+	Tweet tweet = new Tweet();
+	tweet.setTweet(text);
+	tweet.setPublisher(publisher);
+
+	this.metricWriter.increment(new Delta<Number>("published-tweets", 1));
+	this.tweetDao.insert(tweet);
     }
 
     /**
-      Recover tweet from repository
-      Parameter - id - id of the Tweet to retrieve
-      Result - retrieved Tweet
-    */
+     * Recover tweet from repository Parameter
+     * 
+     * @param id-
+     *            id of the Tweet to retrieve
+     * @return retrieved Tweet
+     */
     public Tweet getTweet(Long id) {
-      return this.entityManager.find(Tweet.class, id);
+	LOGGER.info("getTweet {} ", id);
+	this.metricWriter.increment(new Delta<Number>("times-queried-tweets", 1));
+	return this.tweetDao.findById(id);
     }
 
     /**
-      Recover tweet from repository
-      Parameter - id - id of the Tweet to retrieve
-      Result - retrieved Tweet
-    */
+     * Recover all tweets from repository
+     * 
+     * @return list with all tweets
+     */
     public List<Tweet> listAllTweets() {
-        List<Tweet> result = new ArrayList<Tweet>();
-        this.metricWriter.increment(new Delta<Number>("times-queried-tweets", 1));
-        TypedQuery<Long> query = this.entityManager.createQuery("SELECT id FROM Tweet AS tweetId WHERE pre2015MigrationStatus<>99 ORDER BY id DESC", Long.class);
-        List<Long> ids = query.getResultList();
-        for (Long id : ids) {
-            result.add(getTweet(id));
-        }
-        return result;
+	LOGGER.info("listAllTweets");
+	this.metricWriter.increment(new Delta<Number>("times-queried-tweets", 1));
+	return this.tweetDao.listAll();
+    }
+
+    /**
+     * Discard a tweet
+     * 
+     * @param tweet
+     *            id of the tweet to discard
+     */
+    public void discardTweet(Long tweet) {
+	LOGGER.info("discardTweet {}", tweet);
+	if (this.getTweet(tweet) == null) {
+	    throw new EntityNotFoundException(String.format("Tweet not found with id %d", tweet));
+	}
+	this.metricWriter.increment(new Delta<Number>("discarded-tweets", 1));
+	this.tweetDao.discardTweet(tweet);
+    }
+
+    /**
+     * List all discarded tweets
+     * 
+     * @return
+     */
+    public List<Tweet> listDiscardedTweets() {
+	LOGGER.info("listDiscardedTweets");
+	this.metricWriter.increment(new Delta<Number>("times-queried-tweets", 1));
+	return this.tweetDao.listAllDiscarded();
+    }
+
+    /**
+     * Check if the tweet is greater than 140 chars without links.
+     * 
+     * @param text
+     * @return
+     */
+    private boolean tweetExcedesLength(String text) {
+	String valuableText = text.replaceAll(URL_PATTERN, "");
+	return valuableText.length() < TWEET_MAX_LENGTH;
     }
 }
